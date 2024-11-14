@@ -5,6 +5,7 @@ import mysql.connector
 from mysql.connector import Error
 
 app = Flask(__name__)
+sec = app
 
 def fetch_data_from_mysql():
     try:
@@ -139,7 +140,6 @@ def recommend():
     
     except Exception as e:
         return jsonify({"error": str(e)}), 400
-
 
 
 
