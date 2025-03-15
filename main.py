@@ -27,11 +27,19 @@ def fetch_data_from_mysql():
     """
     try:
         # Konfigurasi koneksi ke database MySQL
+        # connection = mysql.connector.connect(
+        #     host="127.0.0.1",
+        #     user="refactor_laptopland",
+        #     password="LaptopLand123",
+        #     database="refactor_laps"
+        # )
+        
+        # ------ develop local ----------
         connection = mysql.connector.connect(
             host="127.0.0.1",
-            user="refactor_laptopland",
-            password="LaptopLand123",
-            database="refactor_laps"
+            user="root",
+            password="",
+            database="db_laptopland"
         )
         
         # Query untuk mengambil semua data dari tabel 'product'
@@ -120,16 +128,34 @@ def preprocess_data(df, user_input):
         df_copy['type_storage'] = df_copy['type_storage'].apply(lambda x: 1 if x == user_input['type_storage'] else 0)
     else:
         df_copy['type_storage'] = 1
+        
+    df_copy['type_storage'] = df_copy['type_storage'].astype(str)
+    df_copy['processor'] = df_copy['processor'].astype(str)
+
 
     # Proses prosesor
-    if user_input['processor'] != 'all':
-        df_copy['processor'] = df_copy['processor'].apply(lambda x: 1 if x == user_input['processor'] else 0)
+    if user_input['processor'].lower() == 'intel':
+        df_copy['processor'] = df_copy['processor'].apply(lambda x: 1 if x.lower() == 'intel' else 0)
+        user_input['processor'] = 1  # Vektor input pengguna untuk Intel
+    elif user_input['processor'].lower() == 'amd':
+        df_copy['processor'] = df_copy['processor'].apply(lambda x: 1 if x.lower() == 'amd' else 0)
+        user_input['processor'] = 0  # Vektor input pengguna untuk AMD
     else:
-        df_copy['processor'] = 1 
+        df_copy['processor'] = 1
+        user_input['processor'] = 1
 
     # Tetapkan nilai default untuk input pengguna
-    user_input['type_storage'] = 1  
-    user_input['processor'] = 1 
+    if user_input['type_storage'].lower() == 'ssd':
+        df_copy['type_storage'] = df_copy['type_storage'].apply(lambda x: 1 if x.lower() == 'ssd' else 0)
+        user_input['type_storage'] = 1  # Vektor input pengguna untuk SSD
+    elif user_input['type_storage'].lower() == 'hdd':
+        df_copy['type_storage'] = df_copy['type_storage'].apply(lambda x: 1 if x.lower() == 'hdd' else 0)
+        user_input['type_storage'] = 0  # Vektor input pengguna untuk HDD
+    else:
+        # Jika 'all', tidak ada preferensi
+        df_copy['type_storage'] = 1
+        user_input['type_storage'] = 1
+
 
     return df_copy, user_input
 
@@ -167,29 +193,33 @@ def recommend():
         
         # Mengambil data dari MySQL
         df = fetch_data_from_mysql()
-        if user_input['price'] == -1 and user_input['ram'] == -1 and user_input['storage'] == -1 and user_input['screen_size'] == -1 and user_input['type_storage'] == 'all' and user_input['processor'] == 'all':
-            results = df.to_dict(orient='records')
-            for product in results:
-                product['similarity'] = 0  
+
+        # Filter data berdasarkan type_storage dan processor
+        if user_input['type_storage'].lower() != 'all':
+            df = df[df['type_storage'].str.lower() == user_input['type_storage'].lower()]
+
+        if user_input['processor'].lower() != 'all':
+            df = df[df['processor'].str.lower().str.startswith(user_input['processor'].lower())]
+
+        # Jika tidak ada data yang sesuai dengan filter
+        if df.empty:
             return jsonify({
-                'average_similarity': 0,  
-                'data': results[:count]  # Mengambil data sesuai dengan parameter count
+                'average_similarity': 0,
+                'data': []
             })
 
-        # Preprocessing data
+        # Preprocessing data (hanya untuk kolom numerik)
         processed_df, user_vector = preprocess_data(df, user_input)
 
-        # Bobot untuk setiap atribut
-        weights = np.array([0.3, 0.2, 0.1, 0.1, 0.15, 0.15])
+        # Bobot untuk setiap atribut (hanya untuk kolom numerik)
+        weights = np.array([0.17, 0.21, 0.2, 0.11])  # Hanya untuk price, ram, storage, screen_size
 
-        # Buat vektor input pengguna
+        # Buat vektor input pengguna (hanya untuk kolom numerik)
         user_vector = np.array([
             user_vector['price'],
             user_vector['ram'],
             user_vector['storage'],
-            user_vector['screen_size'],
-            user_vector['type_storage'],
-            user_vector['processor']
+            user_vector['screen_size']
         ])
 
         # Menghitung cosine similarity
@@ -199,9 +229,7 @@ def recommend():
                 row['price'],
                 row['ram'],
                 row['storage'],
-                row['screen_size'],
-                row['type_storage'],
-                row['processor']
+                row['screen_size']
             ])
             similarity = calculate_cosine_similarity(user_vector, product_vector, weights)
             similarities.append(similarity)
@@ -215,6 +243,8 @@ def recommend():
 
         for i, product in enumerate(results):
             product['similarity'] = similarities[i]
+            
+        results = sorted(results, key=lambda x: x.get('similarity', 0), reverse=True)
 
         average_similarity = np.mean(similarities)
 
@@ -226,8 +256,6 @@ def recommend():
     except Exception as e:
         # Tangani error secara umum
         return jsonify({"error": str(e)}), 400
-
-
 
 @app.route('/', methods=['GET'])
 def index():
