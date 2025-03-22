@@ -58,205 +58,152 @@ def fetch_data_from_mysql():
     return df
 
 # Fungsi untuk normalisasi data menggunakan min-max normalization
-def min_max_normalize(series):
-    """
-    Melakukan normalisasi min-max pada kolom.
-    Args:
-        series (pd.Series): Kolom data yang akan dinormalisasi.
-    Returns:
-        pd.Series: Kolom yang telah dinormalisasi.
-    """
-    return (series - series.min()) / (series.max() - series.min())
-
+def min_max_normalize(series, user_value):
+    min_val = series.min()
+    max_val = series.max()
+    if max_val == min_val:
+        return pd.Series([0.5] * len(series), 0.5)
+    normalized_series = (series - min_val) / (max_val - min_val)
+    return normalized_series, (user_value - min_val) / (max_val - min_val) if max_val != min_val else 0.5
 def calculate_cosine_similarity(vector1, vector2, weights):
-    """
-    Menghitung cosine similarity antara dua vektor dengan bobot.
-    Args:
-        vector1 (np.array): Vektor pertama.
-        vector2 (np.array): Vektor kedua.
-        weights (np.array): Bobot untuk masing-masing elemen vektor.
-    Returns:
-        float: Nilai cosine similarity.
-    """
-    
-    # Mengalikan vektor dengan bobot
     weighted_vector1 = vector1 * weights
     weighted_vector2 = vector2 * weights
 
-    # Menghitung dot product dan magnitudo
     dot_product = np.dot(weighted_vector1, weighted_vector2)
     magnitude1 = np.sqrt(np.dot(weighted_vector1, weighted_vector1))
     magnitude2 = np.sqrt(np.dot(weighted_vector2, weighted_vector2))
 
-    # Mengembalikan hasil cosine similarity
-    return dot_product / (magnitude1 * magnitude2) if magnitude1 and magnitude2 else 0
+    if magnitude1 == 0 or magnitude2 == 0:
+        return 0.0
+    return dot_product / (magnitude1 * magnitude2)
 
 # Fungsi untuk preprocessing data berdasarkan input pengguna
 def preprocess_data(df, user_input):
-    """
-    Melakukan preprocessing data untuk perhitungan rekomendasi.
-    Args:
-        df (pd.DataFrame): DataFrame dengan data produk.
-        user_input (dict): Input spesifikasi pengguna.
-    Returns:
-        tuple: DataFrame yang diproses dan vektor input pengguna.
-    """
-    
-    # Salin DataFrame untuk menjaga data asli tetap utuh
     df_copy = df.copy()
+    user_normalized = {}
 
-    for col in ['price', 'ram', 'storage', 'screen_size']:
+    # Simpan harga asli untuk respons
+    df_copy['original_price'] = df_copy['price']
+
+    # Normalisasi untuk setiap fitur numerik kecuali harga
+    for col in ['ram', 'storage', 'screen_size']:
         if col in user_input:
-            # Pastikan input berupa float
-            user_input[col] = float(user_input[col])  
-
-            # Ubah kolom menjadi numerik
             df_copy[col] = pd.to_numeric(df_copy[col], errors='coerce')
+            df_copy = df_copy.dropna(subset=[col])
             
-            if df_copy[col].isnull().any():
-                # Jika ada data yang tidak valid
-                return jsonify({"error": f"Invalid data found in column: {col}"}), 400
+            if df_copy[col].empty:
+                continue
+                
+            # Normalisasi data produk dan input pengguna
+            normalized_col, user_val = min_max_normalize(df_copy[col], user_input[col])
+            df_copy[col] = normalized_col
+            user_normalized[col] = user_val
 
-            # Normalisasi kolom
-            df_copy[col] = min_max_normalize(df_copy[col])
-
-            # Normalisasi input pengguna
-            user_input[col] = (user_input[col] - df[col].min()) / (df[col].max() - df[col].min())
-
-    # Proses tipe penyimpanan
-    if user_input['type_storage'] != 'all':
-        df_copy['type_storage'] = df_copy['type_storage'].apply(lambda x: 1 if x == user_input['type_storage'] else 0)
-    else:
-        df_copy['type_storage'] = 1
+    # Normalisasi harga hanya untuk perhitungan similarity
+    if 'price' in user_input:
+        df_copy['price'] = pd.to_numeric(df_copy['price'], errors='coerce')
+        df_copy = df_copy.dropna(subset=['price'])
         
-    df_copy['type_storage'] = df_copy['type_storage'].astype(str)
-    df_copy['processor'] = df_copy['processor'].astype(str)
+        if not df_copy['price'].empty:
+            normalized_price, user_price_norm = min_max_normalize(df_copy['price'], user_input['price'])
+            df_copy['price'] = normalized_price
+            user_normalized['price'] = user_price_norm
 
-
-    # Proses prosesor
-    if user_input['processor'].lower() == 'intel':
-        df_copy['processor'] = df_copy['processor'].apply(lambda x: 1 if x.lower() == 'intel' else 0)
-        user_input['processor'] = 1  # Vektor input pengguna untuk Intel
-    elif user_input['processor'].lower() == 'amd':
-        df_copy['processor'] = df_copy['processor'].apply(lambda x: 1 if x.lower() == 'amd' else 0)
-        user_input['processor'] = 0  # Vektor input pengguna untuk AMD
+    # Penanganan tipe penyimpanan
+    if user_input['type_storage'].lower() in ['ssd', 'hdd']:
+        # Filter data berdasarkan type_storage yang dipilih
+        df_copy = df_copy[df_copy['type_storage'].str.lower() == user_input['type_storage'].lower()]
+        user_normalized['type_storage'] = 1  # Bobot penuh jika sesuai
     else:
-        df_copy['processor'] = 1
-        user_input['processor'] = 1
+        user_normalized['type_storage'] = 0.5  # Bobot netral jika 'all'
 
-    # Tetapkan nilai default untuk input pengguna
-    if user_input['type_storage'].lower() == 'ssd':
-        df_copy['type_storage'] = df_copy['type_storage'].apply(lambda x: 1 if x.lower() == 'ssd' else 0)
-        user_input['type_storage'] = 1  # Vektor input pengguna untuk SSD
-    elif user_input['type_storage'].lower() == 'hdd':
-        df_copy['type_storage'] = df_copy['type_storage'].apply(lambda x: 1 if x.lower() == 'hdd' else 0)
-        user_input['type_storage'] = 0  # Vektor input pengguna untuk HDD
+    # Penanganan prosesor
+    processor_mapping = {'intel': 1, 'amd': 0}
+    if user_input['processor'].lower() in processor_mapping:
+        df_copy['processor'] = df_copy['processor'].str.lower().str.contains(
+            user_input['processor'].lower()
+        ).astype(int)
+        user_normalized['processor'] = 1
     else:
-        # Jika 'all', tidak ada preferensi
-        df_copy['type_storage'] = 1
-        user_input['type_storage'] = 1
+        user_normalized['processor'] = 0.5
+        df_copy['processor'] = 0.5
 
+    return df_copy, user_normalized
 
-    return df_copy, user_input
-
-# Endpoint untuk rekomendasi laptop
+def get_dynamic_weights(user_input):
+    weights = {
+        'price': 0.17,
+        'ram': 0.21,
+        'storage': 0.20,
+        'screen_size': 0.11,
+        'processor': 0.16 if user_input['processor'] != 'all' else 0,
+        'type_storage': 0.15 if user_input['type_storage'] != 'all' else 0
+    }
+    return np.array(list(weights.values()))
 @app.route('/recommend', methods=['GET'])
 def recommend():
-    """
-    Endpoint untuk memberikan rekomendasi laptop berdasarkan spesifikasi pengguna.
-    Parameter Query:
-        - price (float): Harga laptop.
-        - ram (float): Kapasitas RAM.
-        - storage (float): Kapasitas penyimpanan.
-        - screen_size (float): Ukuran layar.
-        - type_storage (str): Tipe penyimpanan (SSD/HDD/all).
-        - processor (str): Tipe prosesor (Intel/AMD/all).
-        - count (int): Jumlah rekomendasi yang ingin ditampilkan (default: 5).
-    Returns:
-        JSON: Rekomendasi laptop dengan nilai similarity.
-    """
     try:
-        # Mengambil parameter dari query
         user_input = {
-            'price': float(request.args.get('price', -1)),  
+            'price': float(request.args.get('price', -1)),
             'ram': float(request.args.get('ram', -1)),
             'storage': float(request.args.get('storage', -1)),
             'screen_size': float(request.args.get('screen_size', -1)),
-            'type_storage': request.args.get('type_storage', 'all'),  
+            'type_storage': request.args.get('type_storage', 'all'),
             'processor': request.args.get('processor', 'all')
         }
 
-        # Mengambil jumlah data yang ingin ditampilkan
-        count = int(request.args.get('count', 5))  # Default 5 jika parameter count tidak diberikan
-        print("User Input:", user_input)
-        print("Count:", count)
-        
-        # Mengambil data dari MySQL
         df = fetch_data_from_mysql()
-
-        # Filter data berdasarkan type_storage dan processor
-        if user_input['type_storage'].lower() != 'all':
-            df = df[df['type_storage'].str.lower() == user_input['type_storage'].lower()]
-
-        if user_input['processor'].lower() != 'all':
-            df = df[df['processor'].str.lower().str.startswith(user_input['processor'].lower())]
-
-        # Jika tidak ada data yang sesuai dengan filter
         if df.empty:
-            return jsonify({
-                'average_similarity': 0,
-                'data': []
-            })
+            return jsonify({'average_similarity': 0, 'data': []})
 
-        # Preprocessing data (hanya untuk kolom numerik)
-        processed_df, user_vector = preprocess_data(df, user_input)
-
-        # Bobot untuk setiap atribut (hanya untuk kolom numerik)
-        weights = np.array([0.17, 0.21, 0.2, 0.11])  # Hanya untuk price, ram, storage, screen_size
-
-        # Buat vektor input pengguna (hanya untuk kolom numerik)
+        processed_df, user_norm = preprocess_data(df, user_input)
+        weights = get_dynamic_weights(user_input)
+        
+        # Membuat vektor input pengguna
         user_vector = np.array([
-            user_vector['price'],
-            user_vector['ram'],
-            user_vector['storage'],
-            user_vector['screen_size']
+            user_norm['price'],
+            user_norm['ram'],
+            user_norm['storage'],
+            user_norm['screen_size'],
+            user_norm['processor'],
+            user_norm['type_storage']
         ])
 
-        # Menghitung cosine similarity
         similarities = []
         for _, row in processed_df.iterrows():
             product_vector = np.array([
                 row['price'],
                 row['ram'],
                 row['storage'],
-                row['screen_size']
+                row['screen_size'],
+                row['processor'],
+                1 if row['type_storage'].lower() == user_input['type_storage'].lower() else 0
             ])
             similarity = calculate_cosine_similarity(user_vector, product_vector, weights)
             similarities.append(similarity)
 
-        # Tambahkan kolom similarity ke DataFrame
         processed_df['similarity'] = similarities
-        top_laptops = processed_df.nlargest(count, 'similarity')  # Mengambil sejumlah count teratas
-
-        # Konversi hasil ke JSON
-        results = df.loc[top_laptops.index].to_dict(orient='records')
-
-        for i, product in enumerate(results):
-            product['similarity'] = similarities[i]
-            
-        results = sorted(results, key=lambda x: x.get('similarity', 0), reverse=True)
-
-        average_similarity = np.mean(similarities)
-
+        top_laptops = processed_df.nlargest(int(request.args.get('count', 5)), 'similarity')
+        
+        # Konversi ke respons JSON
+        results = []
+        for _, row in top_laptops.iterrows():
+            laptop_data = row.to_dict()
+            # Gunakan harga asli untuk respons
+            laptop_data['price'] = row['original_price']
+            # Hapus kolom original_price dari respons
+            del laptop_data['original_price']
+            results.append(laptop_data)
+        
         return jsonify({
-            'average_similarity': average_similarity,
+            'average_similarity': top_laptops['similarity'].mean(),
             'data': results
         })
     
     except Exception as e:
-        # Tangani error secara umum
-        return jsonify({"error": str(e)}), 400
-
+        return jsonify({'error': str(e)}), 400
+    
+    
 @app.route('/', methods=['GET'])
 def index():
     """
